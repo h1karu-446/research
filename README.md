@@ -20,11 +20,10 @@
 
 ```txt
 research/
-├── papers/          # 参考文献・執筆論文
+├── papers/          # 執筆論文
 ├── experiments/     # 実験・シミュレーション
 │   ├── exp001_xxx/
 │   ├── exp002_xxx/
 │   └── ...
-├── data/            # データ（git管理外）
 ├── results/         # 実験結果・出力
 └── README.md
