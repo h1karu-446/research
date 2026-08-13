@@ -5,8 +5,8 @@ DeepDOF (Jin et al. 2020) リポジトリの DeepDOF_step2.py を参考に、
 位相マスクを「外した」状態の通常の顕微鏡PSFをシミュレートする。
 
 論文 Eqs. 2–6 の対応:
-    PSF(x2,y2) = |F{P(x1,y1)}|^2          ... (2)
-    P(x1,y1) = A(x1,y1) * exp(i*Φ(x1,y1)) ... (3)
+    PSF(x2,y2) = |F{P(x1,y1)}|^2          ... (2)   ← PSF
+    P(x1,y1) = A(x1,y1) * exp(i*Φ(x1,y1)) ... (3)   ← 瞳関数
     Φ_DF(x1,y1; z) = k*Wm*r^2             ... (5)   ← 離焦のみ
     Φ(x1,y1; z) = Φ_DF + Φ_M              ... (6)   ← マスクなし = Φ_M = 0
 
@@ -28,7 +28,6 @@ from pathlib import Path
 
 # --- 物理パラメータ（DeepDOF と同じ：Olympus 4x/0.13 NA, λ=550 nm）---
 WAVELENGTH = 550e-9      # 波長 λ [m]（緑、蛍光イメージング）
-N_REFRACT  = 1.5         # マスク基板の屈折率（v0.1 では未使用、v0.2 で使う）
 
 # --- シミュレーションパラメータ ---
 N_B    = 71              # PSF と瞳の格子サイズ [pix]（DeepDOFと同じ）
@@ -49,43 +48,38 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # =============================================================================
 # 2. 瞳座標と瞳マスク（円形アパーチャ）
 # =============================================================================
+
+# 71*71の座標を作る
 def build_pupil_coords(n=N_B, half_width=PUPIL_HALF_WIDTH):
     """瞳面の正規化座標 (xx, yy) と r^2 を返す。"""
-    x = np.linspace(-half_width, half_width, n)
-    xx, yy = np.meshgrid(x, x)
-    r2 = xx ** 2 + yy ** 2
+    x = np.linspace(-half_width, half_width, n)  # (開始値, 終了値, 点の数)で等間隔に点を並べる。(-2, 2, 5)なら[-2, -1, 0, 1, 2]を返す
+    xx, yy = np.meshgrid(x, x) # xに入ってるn個(N_B:71個)のリストは一次元だから、2次元(71*71)にする。
+    r2 = xx ** 2 + yy ** 2 # 原点からの距離の二乗
     return xx, yy, r2
 
-
+# 瞳関数の振幅 A(ρ)を作成。
 def build_aperture(r2, radius=PUPIL_HALF_WIDTH):
     """円形アパーチャ A(x1,y1) を返す。瞳の内側で 1、外側で 0。
 
     DeepDOF のコードでは zernike_basis_150mm.mat に格納された idx を
     使っているが、それは「瞳半径 = 格子の最大値」と同じ円形アパーチャ。
-    我々はシンプルに自前で作る。
     """
-    return (r2 <= radius ** 2).astype(np.float32)
+    return (r2 <= radius ** 2).astype(np.float32)  # r2 <= radius**2 というbool型をfloat32型に変換して返す。 [1. 1. 1. 0. 1.]みたいなリストが返される。
+
 
 
 # =============================================================================
 # 3. デフォーカス位相 Φ_DF（論文 Eq. 5）
 # =============================================================================
 def gen_defocus_phase(phi_values, r2):
-    """各デフォーカス値に対する Φ_DF(x1,y1; z) = kWm * r^2 を生成する。
-
-    Parameters
-    ----------
-    phi_values : (N_Phi,) ndarray
-        各断面の kWm 値（無次元）。DeepDOF では linspace(-10, 10, 21)。
-    r2 : (N, N) ndarray
-        瞳面の r^2。
-
-    Returns
-    -------
-    oof_phase : (N_Phi, N, N) ndarray
-        デフォーカス位相 [rad]。
     """
-    # broadcasting: (N_Phi, 1, 1) * (1, N, N) → (N_Phi, N, N)
+    各デフォーカス値に対する Φ_DF(x1,y1; z) = kWm * r^2 を生成する。
+    phi_valuesは21個の数字が並んだ1次元のリスト(21,)、
+    r2は71*71の2次元マップ(71,71)
+    欲しい結果は「kWm=-10の位相マップ」「kWm=-9の位相マップ」…と21枚の71*71マップ
+    が積み重なった3次元の塊(21, 71, 71)
+    """
+    # (N_Phi, N, N)を作って返してる。
     return phi_values[:, None, None] * r2[None, :, :]
 
 
@@ -93,35 +87,24 @@ def gen_defocus_phase(phi_values, r2):
 # 4. PSF 計算（マスクなし版、論文 Eq. 2–6 の Φ_M = 0 ケース）
 # =============================================================================
 def gen_psfs_no_mask(oof_phase, aperture):
-    """マスクなしの PSF スタックを生成する。
-
-    DeepDOF_step2.py の gen_PSFs を NumPy に移植。
-    マスクの高さマップ h=0 とすることで Φ_M=0 を実現している。
-
-    Parameters
-    ----------
-    oof_phase : (N_Phi, N, N) ndarray
-        各断面のデフォーカス位相 [rad]。
-    aperture : (N, N) ndarray
-        円形アパーチャ A(x1,y1)。
-
-    Returns
-    -------
-    psfs : (N_Phi, N, N) ndarray
-        各デフォーカスでの PSF（正規化済）。
-    """
+    # マスクなしの PSF スタックを生成する。
     n_phi, n, _ = oof_phase.shape
 
-    # 瞳関数 P = A * exp(i*Φ)。Φ_M=0 なので Φ = Φ_DF のみ。
+    # 瞳関数pupilを作る。 P = A * exp(i*Φ)。Φ_M=0 なので Φ = Φ_DF のみ。
     phase = oof_phase                           # (N_Phi, N, N)
     pupil = aperture[None, :, :] * np.exp(1j * phase)
 
-    # FFT → fftshift → 強度の二乗 → 規格化
-    # DeepDOF と同じく Norm = N*N*sum(A^2)
+    # フーリエ変換
     fft = np.fft.fftshift(np.fft.fft2(pupil), axes=(-2, -1))
+    
+    # 絶対値の二乗を取ってpsfを作る
     psf_unnorm = np.abs(fft) ** 2
+    
+    # psfを正規化する
     norm = n * n * np.sum(aperture ** 2)
     psfs = psf_unnorm / norm
+    
+    # 21枚の、それぞれ合計が1.0になるよう正規化された、float32型のPSF画像スタックを返す。
     return psfs.astype(np.float32)
 
 
@@ -157,7 +140,11 @@ def plot_psf_grid_normalized(psfs, phi_values, savepath):
 
 
 def plot_psf_grid(psfs, phi_values, savepath):
-    """21枚のPSFをグリッド表示。中心切り出しで詳細を見やすくする。"""
+    """
+    21枚のPSFをグリッド表示。
+    個別正規化されてないから、焦点(kWm=0)以外はほぼ真っ暗。
+    DOFが浅いことを認識できる。
+    """
     n_phi = psfs.shape[0]
     # PSFの中心32x32だけ表示（71x71全部はスカスカで見にくい）
     cx = psfs.shape[1] // 2
@@ -182,7 +169,10 @@ def plot_psf_grid(psfs, phi_values, savepath):
 
 
 def plot_psf_profiles(psfs, phi_values, savepath):
-    """PSF中心横断面（x方向プロファイル）を5断面だけ重ねて描く。"""
+    """
+    PSF中心横断面（x方向プロファイル）を5断面だけ重ねて描く
+    -10, -5, 0, 5, 10(kWm)のpsfの強度の違いをグラフで出力
+    """
     cx = psfs.shape[1] // 2
     pick = [0, 5, 10, 15, 20]  # -10, -5, 0, +5, +10
     fig, ax = plt.subplots(figsize=(7, 4.5))
@@ -200,7 +190,10 @@ def plot_psf_profiles(psfs, phi_values, savepath):
 
 
 def plot_peak_vs_defocus(psfs, phi_values, savepath):
-    """ピーク強度 vs デフォーカス。"""
+    """
+    横軸kWm、縦軸ピーク強度で21点をプロットしたもの
+    「DOF(焦点深度)」を最も直接的に可視化した図
+    """
     peaks = psfs.max(axis=(1, 2))
     fig, ax = plt.subplots(figsize=(7, 4))
     ax.plot(phi_values, peaks, "o-")
@@ -234,7 +227,7 @@ def main():
 
     # 計算
     oof_phase = gen_defocus_phase(phi_values, r2)
-    psfs = gen_psfs_no_mask(oof_phase, aperture)
+    psfs = gen_psfs_no_mask(oof_phase, aperture) #psfs[k]には、デフォーカス量kWmのとき、理想的な点光源が像面上にどのくらい集中/拡散して写るかを表す、正規化された相対強度分布
     print(f"PSFスタック     : shape={psfs.shape}, dtype={psfs.dtype}")
     print(f"焦点(kWm=0) PSF : peak={psfs[10].max():.4e}, sum={psfs[10].sum():.4f}")
     print(f"離焦(kWm=10)PSF : peak={psfs[20].max():.4e}, sum={psfs[20].sum():.4f}")
