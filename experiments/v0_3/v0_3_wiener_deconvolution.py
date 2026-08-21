@@ -35,16 +35,16 @@ from pathlib import Path
 # 1. パラメータ定義・入力データの読み込み
 # =============================================================================
 
-V02_OUTPUT_DIR = Path(__file__).parent.parent / "v0_2" / "outputs"
+V02_OUTPUT_DIR = Path(__file__).parent.parent / "v0_2" / "outputs_aliasing_fixed"
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 def load_psf_stacks():
     """v0.2b(エイリアシング修正版)が生成したPSFスタックを読み込む。"""
-    psfs_no_mask = np.load(V02_OUTPUT_DIR / "psfs_no_mask_aliasing_fixed.npy")
-    psfs_with_mask = np.load(V02_OUTPUT_DIR / "psfs_with_mask_aliasing_fixed.npy")
-    phi_values = np.load(V02_OUTPUT_DIR / "phi_values_aliasing_fixed.npy")
+    psfs_no_mask = np.load(V02_OUTPUT_DIR / "psfs_no_mask.npy")
+    psfs_with_mask = np.load(V02_OUTPUT_DIR / "psfs_with_mask.npy")
+    phi_values = np.load(V02_OUTPUT_DIR / "phi_values.npy")
     return psfs_no_mask, psfs_with_mask, phi_values
 
 

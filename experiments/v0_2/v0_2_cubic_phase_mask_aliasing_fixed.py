@@ -8,11 +8,11 @@ v0_2_cubic_phase_mask.py のロジック(CPM位相・PSF比較図・z不変性�
 (N_B=71, PUPIL_HALF_WIDTH=71/25) だったことに起因する。
 
 1. 位相サンプリング不足:
-   Φ_DF(x1,y1;z) = kWm*r^2 (Eq.5) の勾配 |∇Φ_DF| = 2*kWm*r は
+   Φ_DF(x1,y1;z) = kWm*r^2 (デフォーカス位相) の勾配 |∇Φ_DF| = 2*kWm*r は
    アパーチャ端(r=R)で最大になる。kWm=10, R=2.84 のとき
        |∇Φ_DF|_max = 2*10*2.84 ≈ 56.8 [rad / 正規化座標1単位]
-   旧版の dx = 2R/(N_B-1) ≈ 0.0811 では
-       Δφ_max = |∇Φ_DF|_max * dx ≈ 4.6 rad  (> π ⇒ サンプリング定理違反)
+   旧版の dx = 2R/(N_B-1) ≈ 0.0811 (隣り合う点と点の距離)では
+       Δφ_max = |∇Φ_DF|_max * dx ≈ 4.6 rad  (> π ⇒ サンプリング定理違反, 本来の位相変化が適切に反映されない。270°時計回り回転は、90度の反時計回り回転として捉えられてしまう)
    これがkWm=±8〜10でのチェッカーボード状ノイズの正体。
    → 対策: アパーチャ内のサンプル数(=グリッド解像度)を増やし、dxを小さくする。
 
@@ -26,7 +26,6 @@ v0_2_cubic_phase_mask.py のロジック(CPM位相・PSF比較図・z不変性�
 本コードでは瞳グリッド半幅を GRID_PAD_FACTOR 倍に広げつつ、グリッド点数
 N_GRID を増やして dx を十分小さく保つ(下記パラメータ参照)。
 CPM PSFはデフォーカスが大きいほどピーク位置が中心から遠くへシフトする
-(report_chang.pdf Sec.2「center of the largest peak shifts with misfocus」)
 ため、PSFの保存・可視化用クロップ幅(CROP_HALF)も併せて拡張している。
 
 論文 Eqs. 2-6 の対応(v0.1, v0.2と同じ):
@@ -52,23 +51,24 @@ PHI_MAX = 10.0             # kWm の最大値(無次元)
 
 PUPIL_HALF_WIDTH = 71.0 / 25.0   # ≈ 2.84 (アパーチャ半径。v0.1, v0.2を踏襲)
 
-# --- CPM パラメータ(v0.2で導入、report_chang.pdfと照合済み) ---
+# --- CPM パラメータ ---
 # 中心→瞳コーナーでの位相量 α(x³+y³): α=1.0 のとき Δφ ≈ 45.8 rad ≈ 7.3 cycle。
 # report_chang.pdf Sec.3の基準(対角線上で7-8 cycle)にほぼ一致(詳細はv0_2参照)。
 ALPHA_CPM = 1.0
 
-# --- エイリアシング対策(v0.2bで新規) ---
-GRID_PAD_FACTOR = 4        # 瞳グリッド半幅 = GRID_PAD_FACTOR * PUPIL_HALF_WIDTH
-N_GRID = 1281               # 瞳グリッドの点数(奇数、中心画素を厳密に持たせる)
-# 上記設定での位相サンプリング検証(モジュールdocstringの見積もりと対応):
+# --- エイリアシング対策 ---
+GRID_PAD_FACTOR = 4        # 瞳グリッド全体の広さを、アパーチャ(実際のレンズの開口)の半径の何倍にするかを決める倍率。瞳グリッド半幅 = GRID_PAD_FACTOR * PUPIL_HALF_WIDTH
+N_GRID = 1281               # 瞳グリッドの点数(奇数、中心画素を厳密に持たせる)。グリッド数を増やしてサンプリング不足を解消
+# 上記設定での位相サンプリング検証:
 #   dx = 2*GRID_PAD_FACTOR*PUPIL_HALF_WIDTH / (N_GRID-1) ≈ 0.01775
 #   Δφ_max(kWm=10, アパーチャ端) = 2*10*2.84*dx ≈ 1.01 rad (< π/3 相当、安全)
 
 CROP_HALF = 300              # PSF中心から切り出す半幅(600x600)。
+# GRID_PAD_FACTOR(4倍)の大きさのキャンパスを用意した(ガードバンドのため)が、実際にPSFで意味をなすのはもっと狭い範囲だけ。
 # crop_half=64(旧v0.2相当)ではkWm=+10でCPM PSFのエネルギーの約14%しか
 # 捉えられない。crop_half=300でkWm=+10でも約99.2%を捕捉できることを確認済み。
 
-OUTPUT_DIR = Path(__file__).parent / "outputs"
+OUTPUT_DIR = Path(__file__).parent / "outputs_aliasing_fixed"  # 旧v0.2の outputs/ とは別フォルダに分離
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
@@ -79,7 +79,7 @@ def build_pupil_coords(n=N_GRID, grid_half_width=None):
     """瞳グリッドの正規化座標 (xx, yy) と r^2 を返す。
     grid_half_width はアパーチャ半径より大きく取り、ガードバンドとする。"""
     if grid_half_width is None:
-        grid_half_width = GRID_PAD_FACTOR * PUPIL_HALF_WIDTH
+        grid_half_width = GRID_PAD_FACTOR * PUPIL_HALF_WIDTH  # グリッド全体の広さを計算
     x = np.linspace(-grid_half_width, grid_half_width, n)
     xx, yy = np.meshgrid(x, x)
     r2 = xx ** 2 + yy ** 2
@@ -253,14 +253,14 @@ def main():
     psfs_with_mask = gen_psfs(oof_phase + cpm_phase[None, :, :], aperture)
     print(f"PSFスタック(クロップ後): shape={psfs_no_mask.shape}")
 
-    # 保存(旧v0.2の出力を上書きしないよう、ファイル名に _aliasing_fixed を付与)
-    np.save(OUTPUT_DIR / "psfs_no_mask_aliasing_fixed.npy", psfs_no_mask)
-    np.save(OUTPUT_DIR / "psfs_with_mask_aliasing_fixed.npy", psfs_with_mask)
-    np.save(OUTPUT_DIR / "phi_values_aliasing_fixed.npy", phi_values)
+    # 保存(旧v0.2の出力とは outputs_aliasing_fixed/ で分離しているので、ファイル名は素のまま)
+    np.save(OUTPUT_DIR / "psfs_no_mask.npy", psfs_no_mask)
+    np.save(OUTPUT_DIR / "psfs_with_mask.npy", psfs_with_mask)
+    np.save(OUTPUT_DIR / "phi_values.npy", phi_values)
 
     plot_psf_comparison_grid(psfs_no_mask, psfs_with_mask, phi_values,
-                              OUTPUT_DIR / "psf_comparison_grid_aliasing_fixed.png")
-    print(f"図を保存        : {OUTPUT_DIR}/psf_comparison_grid_aliasing_fixed.png")
+                              OUTPUT_DIR / "psf_comparison_grid.png")
+    print(f"図を保存        : {OUTPUT_DIR}/psf_comparison_grid.png")
 
     # v0.1(パディングなし)の結果があれば before/after 比較図を作る
     v01_path = Path(__file__).parent.parent / "v0_1" / "outputs" / "psfs_no_mask.npy"
@@ -274,8 +274,8 @@ def main():
     ncc_no_mask = compute_invariance_metric(psfs_no_mask)
     ncc_with_mask = compute_invariance_metric(psfs_with_mask)
     plot_invariance_comparison(ncc_no_mask, ncc_with_mask, phi_values,
-                                OUTPUT_DIR / "invariance_metric_aliasing_fixed.png")
-    print(f"図を保存        : {OUTPUT_DIR}/invariance_metric_aliasing_fixed.png")
+                                OUTPUT_DIR / "invariance_metric.png")
+    print(f"図を保存        : {OUTPUT_DIR}/invariance_metric.png")
     print(f"\n[数値指標] 合焦PSFとのNCC平均(|kWm|>=6の範囲, z不変性の指標):")
     far = np.abs(phi_values) >= 6
     print(f"  no mask : {ncc_no_mask[far].mean():.4f}")
