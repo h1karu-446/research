@@ -123,26 +123,28 @@ def gen_psfs(oof_phase, aperture, n_grid=N_GRID, crop_half=CROP_HALF):
 
 
 # =============================================================================
-# 4. 数値指標:PSFのz不変性を定量化する(v0.2と同一ロジック)
+# 4. 数値指標:PSFのz不変性を定量化する
 # =============================================================================
 def compute_invariance_metric(psfs, crop=150, ref_idx=None):
     """
-    各デフォーカス断面のPSFと合焦断面(既定でref_idx=中央、kWm=0)のPSFとの
-    正規化相互相関係数(NCC)を計算する。NCC=1に近いほどz不変性が高い。
+    各kWm(デフォーカス量)のPSFの「形」が、合焦時(kWm=0)のPSFの形と
+    どれくらい似ているかを、NCC(相関係数、-1〜1)という数値1つで表す関数。
+    値が1に近いほど「形がそっくり」、0に近いほど「形が全然違う」ことを意味します。
 
     report_chang.pdf (Sec.2) が述べる通り、CPMのPSFは「形状はほぼ同じだが
     ピーク位置がデフォーカスに応じて横シフトする」。固定窓での相関だと
     このシフトが形状変化と誤認されるため、各断面をピーク位置basisで
-    クロップ(位置合わせ)してから比較する(v0.2と同じロジック。
+    クロップ(位置合わせ)してから比較する。
     crop のデフォルト値だけ、PSFの保存サイズが128→600になったのに
     合わせて 16→150 にスケールしてある)。
     """
     n_phi, n, _ = psfs.shape
     if ref_idx is None:
-        ref_idx = n_phi // 2
+        ref_idx = n_phi // 2 # 中央=kWm=0を基準にする
 
     padded = np.pad(psfs, ((0, 0), (crop, crop), (crop, crop)), mode="constant")
 
+    # 各デフォーカス断面ごとにピーク位置を探してそこを中心に切り出す(cpmはちょっとずつ横シフトしちゃうから)
     def peak_crop(j):
         img = padded[j]
         py, px = np.unravel_index(np.argmax(img), img.shape)
