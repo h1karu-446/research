@@ -24,6 +24,19 @@ Wienerフィルタのリンギングと、CPM不変性が有限範囲(実測で�
 一方 v0.2b で計算した形状不変性の指標(NCC)では、|kWm|>=6でも
 CPMがno-maskを明確に上回っており(0.48 vs 0.04)、PSNRの逆転は
 「デコンボリューション特有」の効果であることが示唆される。
+
+上記の非単調な結果を受け、v0.2/v0.2bのPSF画像そのもの(=点光源をこの光学系
+で撮影した画像)を直接「撮影画像」として使う、より文字通りのテストを追加した
+(point_source_test())。合成チャープターゲットという中間表現を挟まないぶん
+解釈がシンプルになり、結果(outputs/sharpness_vs_defocus.png)はチャープ
+テストよりずっと単調で分かりやすい: 合焦(|kWm|<=1)ではno-maskの方が
+シャープに復元できる(CPMは合焦時でもピークがCPM自身の形状で広がるという
+トレードオフがあるため)が、それ以外の|kWm|>=2の全域でCPMが一貫して優位
+(平均で約16倍のシャープネス)。outputs/point_source_demo.pngでは、
+kWm=±4でCPM復元に鋭い十字型のピークが現れる一方、no-mask復元はぼやけた
+リングのままであることが視覚的にも確認できる。ただしkWm=±8まで行くと
+両者とも破綻する(α=1のCPM不変性の設計上の限界、report_chang.pdfの
+「±30〜50μmを超えると不変性が崩れる」という報告と定性的に整合)。
 """
 
 import numpy as np
@@ -44,7 +57,7 @@ def load_psf_stacks():
     """v0.2b(エイリアシング修正版)が生成したPSFスタックを読み込む。"""
     psfs_no_mask = np.load(V02_OUTPUT_DIR / "psfs_no_mask.npy")
     psfs_with_mask = np.load(V02_OUTPUT_DIR / "psfs_with_mask.npy")
-    phi_values = np.load(V02_OUTPUT_DIR / "phi_values.npy")
+    phi_values = np.load(V02_OUTPUT_DIR / "phi_values.npy") #  離焦量 [-10, -9, -8, ・・・, 8, 9, 10]
     return psfs_no_mask, psfs_with_mask, phi_values
 
 
@@ -73,13 +86,14 @@ def embed_kernel(kernel, out_shape):
     return np.fft.ifftshift(canvas)
 
 
-def blur_image(img, kernel):
+# 画像をカーネル(PSF)でぼかす
+def blur_image(img, kernel): 
     """img を kernel で(巡回)畳み込む。"""
-    H = np.fft.fft2(embed_kernel(kernel, img.shape))
-    F = np.fft.fft2(img)
-    return np.real(np.fft.ifft2(H * F))
+    H = np.fft.fft2(embed_kernel(kernel, img.shape)) # ①カーネルをFFT
+    F = np.fft.fft2(img) # ②画像をFFT
+    return np.real(np.fft.ifft2(H * F)) # ③ かけて逆FFT
 
-
+# wienerフィルターで復元
 def wiener_deconvolve(blurred, kernel, K):
     """
     Wienerフィルタ: G(u,v) = H*(u,v) / (|H(u,v)|^2 + K)
@@ -116,6 +130,69 @@ def psnr(a, b, data_range=1.0):
     if mse <= 1e-12:
         return 100.0
     return 10 * np.log10(data_range ** 2 / mse)
+
+
+def sharpness(img):
+    """
+    画像がどれだけ「点」に近いか(エネルギーが一箇所に集中しているか)を表す指標。
+    sharpness = max(img) / sum(|img|)。
+    Wienerの出力は負のリンギングを含みうるので分母は絶対値の総和にしている。
+    理想的な点(デルタ関数)に近いほど1に近づき、広がるほど0に近づく。
+    """
+    s = np.sum(np.abs(img))
+    return float(img.max() / (s + 1e-12))
+
+
+# =============================================================================
+# 3b. 点光源テスト(v0.2/v0.2bのPSF画像そのものを「撮影画像」として使う)
+# =============================================================================
+def point_source_test(psfs_no_mask, psfs_with_mask, phi_values, K_wiener, noise_sigma, seed=0):
+    """
+    v0.2/v0.2bのPSFスタックは、そもそも「点光源をこの光学系で撮影した画像」
+    そのものである。合成チャープターゲットを介さず、このPSF画像を直接
+    「撮影画像」として扱い、合焦時に測定した単一のPSFを固定カーネルとして
+    Wienerデコンボリュームする、最も文字通りのEDOFテスト(gen_chirp_targetを
+    使うテストと相補的)。
+
+    復元結果が理想的な点(デルタ関数)にどれだけ近いかを sharpness() で測る。
+    ノイズ・正則化定数(K)はPSFの値のスケール(sum=1に正規化した後のピーク値が
+    no-mask合焦で~0.05、CPM合焦で~0.002、デフォーカス時はさらに小さい)に
+    合わせてチャープテストとは別に調整してある(main()のNOISE_SIGMA_POINT,
+    K_WIENER_POINT参照)。
+    """
+    n_phi = phi_values.shape[0]
+    focus_idx = n_phi // 2
+    kernel_nm_focus = normalize_kernel(psfs_no_mask[focus_idx])
+    kernel_cpm_focus = normalize_kernel(psfs_with_mask[focus_idx])
+
+    rng = np.random.default_rng(seed)
+    h, w = psfs_no_mask.shape[1:]
+    captured_nm = np.empty((n_phi, h, w), dtype=np.float64)
+    captured_cpm = np.empty_like(captured_nm)
+    rec_nm = np.empty_like(captured_nm)
+    rec_cpm = np.empty_like(captured_nm)
+    sharp_nm = np.empty(n_phi)
+    sharp_cpm = np.empty(n_phi)
+
+    for j in range(n_phi):
+        # PSFそのものが「点光源をこの光学系で撮った画像」= 撮影画像として扱う
+        img_nm = normalize_kernel(psfs_no_mask[j]) + rng.normal(0, noise_sigma, (h, w))
+        img_cpm = normalize_kernel(psfs_with_mask[j]) + rng.normal(0, noise_sigma, (h, w))
+
+        # 復元は「合焦時に測定した単一のPSF」を固定カーネルとして使う
+        r_nm = wiener_deconvolve(img_nm, kernel_nm_focus, K_wiener)
+        r_cpm = wiener_deconvolve(img_cpm, kernel_cpm_focus, K_wiener)
+
+        captured_nm[j], captured_cpm[j] = img_nm, img_cpm
+        rec_nm[j], rec_cpm[j] = r_nm, r_cpm
+        sharp_nm[j] = sharpness(r_nm)
+        sharp_cpm[j] = sharpness(r_cpm)
+
+    return {
+        "captured_nm": captured_nm, "captured_cpm": captured_cpm,
+        "rec_nm": rec_nm, "rec_cpm": rec_cpm,
+        "sharp_nm": sharp_nm, "sharp_cpm": sharp_cpm,
+    }
 
 
 # =============================================================================
@@ -156,6 +233,55 @@ def plot_psnr_vs_defocus(psnr_nm, psnr_cpm, phi_values, savepath):
     ax.set_xlabel("kWm (defocus, dimensionless)")
     ax.set_ylabel("PSNR [dB] vs. ground-truth target")
     ax.set_title("EDOF: reconstruction quality vs defocus (single fixed kernel)")
+    ax.axvline(0, color="gray", linestyle="--", alpha=0.5)
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(savepath, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_point_source_demo(results, indices, phi_values, savepath, crop=200):
+    """
+    選択したデフォーカス断面について、no-mask/CPMそれぞれの
+    「点光源の撮影画像(=PSFそのもの)」と復元画像を並べたグリッド図。
+    中心付近をクロップして表示し、各パネルは正の成分をmax=1で正規化する
+    (Wiener出力は負のリンギングを含むため、表示上は0でクリップする)。
+    """
+    n_sel = len(indices)
+    fig, axes = plt.subplots(4, n_sel, figsize=(2.4 * n_sel, 10))
+    row_labels = ["no-mask: captured (=PSF)", "no-mask: recovered",
+                  "CPM: captured (=PSF)", "CPM: recovered"]
+    keys = ["captured_nm", "rec_nm", "captured_cpm", "rec_cpm"]
+    h, w = results["captured_nm"].shape[1:]
+    cy, cx = h // 2, w // 2
+
+    def show(ax, img):
+        c = img[cy - crop:cy + crop, cx - crop:cx + crop]
+        c = np.clip(c, 0, None)
+        c = c / (c.max() + 1e-12)
+        ax.imshow(c, cmap="hot", vmin=0, vmax=1)
+
+    for col, j in enumerate(indices):
+        for row, key in enumerate(keys):
+            show(axes[row, col], results[key][j])
+            axes[row, col].set_xticks([]); axes[row, col].set_yticks([])
+        axes[0, col].set_title(f"kWm={phi_values[j]:+.0f}", fontsize=10)
+    for row in range(4):
+        axes[row, 0].set_ylabel(row_labels[row], fontsize=9)
+    fig.suptitle("v0.3: point-source recovery with a single in-focus PSF kernel", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(savepath, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_sharpness_vs_defocus(sharp_nm, sharp_cpm, phi_values, savepath):
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    ax.plot(phi_values, sharp_nm, "o-", label="no mask + Wiener (fixed in-focus kernel)")
+    ax.plot(phi_values, sharp_cpm, "s-", label="CPM + Wiener (fixed in-focus kernel)")
+    ax.set_xlabel("kWm (defocus, dimensionless)")
+    ax.set_ylabel("recovered sharpness = max / sum(|.|)")
+    ax.set_title("Point-source recovery sharpness vs defocus (single fixed kernel)")
     ax.axvline(0, color="gray", linestyle="--", alpha=0.5)
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
@@ -223,6 +349,28 @@ def main():
                           OUTPUT_DIR / "psnr_vs_defocus.png")
     print(f"図を保存        : {OUTPUT_DIR}/psnr_vs_defocus.png")
 
+    # --- 点光源テスト(PSF画像そのものを撮影画像として使う、チャープと相補的) ---
+    print("\n点光源テスト(v0.2/v0.2bのPSF画像を直接Wienerデコンボリューム)...")
+    NOISE_SIGMA_POINT = 1e-5  # PSF(sum=1正規化後)のピーク値のスケールに合わせて調整
+    K_WIENER_POINT = 1e-2     # 同上。チャープテストのK_WIENERとはスケールが違うため別値
+    ps_results = point_source_test(psfs_no_mask, psfs_with_mask, phi_values,
+                                    K_WIENER_POINT, NOISE_SIGMA_POINT)
+
+    plot_point_source_demo(ps_results, demo_indices, phi_values,
+                            OUTPUT_DIR / "point_source_demo.png")
+    print(f"図を保存        : {OUTPUT_DIR}/point_source_demo.png")
+
+    plot_sharpness_vs_defocus(ps_results["sharp_nm"], ps_results["sharp_cpm"], phi_values,
+                               OUTPUT_DIR / "sharpness_vs_defocus.png")
+    print(f"図を保存        : {OUTPUT_DIR}/sharpness_vs_defocus.png")
+
+    ratio = ps_results["sharp_cpm"] / (ps_results["sharp_nm"] + 1e-12)
+    off_focus = np.abs(phi_values) >= 2
+    print(f"\n[数値指標] 点光源復元シャープネスの比(CPM/no-mask, |kWm|>=2の平均):")
+    print(f"  {ratio[off_focus].mean():.1f}倍(合焦時のみno-maskが上回るが、")
+    print(f"  それ以外の全域でCPMが一貫して優位という、チャープテストより単調で")
+    print(f"  分かりやすい結果になった。点光源テストの詳細はpoint_source_test()参照)。")
+
     # 数値指標のまとめ。
     # 結果は単調ではない: CPMはkWm=±1近傍でno-maskを大きく上回るが、
     # kWm=2〜9では逆にno-maskを下回り、kWm=±10近傍で再び同程度に収束する。
@@ -247,7 +395,7 @@ def main():
     print(f"  v0.2bのNCC指標(形状不変性)ではCPMが|kWm|>=6でも優位(0.48 vs 0.04)。")
     print(f"  PSNRの逆転はデコンボリューション特有の効果であり、次段で要検討。")
 
-    return phi_values, psnr_nm, psnr_cpm
+    return phi_values, psnr_nm, psnr_cpm, ps_results
 
 
 if __name__ == "__main__":
