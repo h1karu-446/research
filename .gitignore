@@ -3,3 +3,16 @@ __pycache__/
 *.pyc
 .DS_Store
 experiments/venv/
+
+# LaTeX build artifacts (papers/)
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.xdv

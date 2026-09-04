@@ -97,7 +97,6 @@ def blur_image(img, kernel):
 def wiener_deconvolve(blurred, kernel, K):
     """
     Wienerフィルタ: G(u,v) = H*(u,v) / (|H(u,v)|^2 + K)
-    K はノイズ対信号比に対応する正則化定数(Kが大きいほど滑らかだが復元は弱い)。
     """
     H = np.fft.fft2(embed_kernel(kernel, blurred.shape))
     G = np.conj(H) / (np.abs(H) ** 2 + K)
@@ -105,7 +104,7 @@ def wiener_deconvolve(blurred, kernel, K):
 
 
 # =============================================================================
-# 3. 合成テストターゲット(チャープ解像度パターン)
+# 3. 合成テストターゲット(チャープ解像度パターン) 「だんだん細かくなっていく縞模様」の合成画像を作る関数
 # =============================================================================
 def gen_chirp_target(size=256, n_cycles=60.0):
     """
@@ -124,12 +123,13 @@ def gen_chirp_target(size=256, n_cycles=60.0):
 
     return np.vstack([top, bottom]).astype(np.float32)
 
-
+# 画像復元精度を定量化　値が大きいほど元画像に近い、良い復元
 def psnr(a, b, data_range=1.0):
+    # 平均二乗誤差 復元結果aと正解bに対応する画素同士の差をとり2乗したものの平均
     mse = np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2)
     if mse <= 1e-12:
         return 100.0
-    return 10 * np.log10(data_range ** 2 / mse)
+    return 10 * np.log10(data_range ** 2 / mse) # MSEを対数(log)スケールに変換。MSEが10分の1になるたびに、PSNRは10dB増える」
 
 
 def sharpness(img):
